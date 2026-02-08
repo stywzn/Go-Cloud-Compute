@@ -12,7 +12,7 @@ The system utilizes **RabbitMQ** for asynchronous task distribution and traffic 
 
 ## 🏗️ Architecture
 
-```mermaid
+mermaid
 graph LR
     User[User] -- POST /api/scan --> API_Gateway[API Gateway (Gin)]
     API_Gateway -- 1. Persist Task --> MySQL[(MySQL DB)]
