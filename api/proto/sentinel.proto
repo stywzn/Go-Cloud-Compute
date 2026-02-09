@@ -1,0 +1,32 @@
+syntax = "proto3";
+
+package sentinel;
+
+option go_package = "./;pb";
+
+service SentinelService{
+    rpc Register (RegisterReq)  returns (RegisterResp);
+    rpc Heartbeat (stream HeartbeatReq ) returns (stream HeartbeatResp);
+}
+
+message RegisterReq{
+    string hostname = 1;
+    string ip = 2;
+    repeated string tags = 3;
+}
+
+message RegisterResp{
+    string agent_id = 1;
+    bool success = 2;
+}
+
+message HeartbeatReq{
+    string agent_id = 1;
+    int64 timestamp = 2;
+    double cpu_usage = 3; 
+    double mem_usage = 4;
+}
+
+message HeartbeatResp{
+    bool config_outdated = 1;
+}

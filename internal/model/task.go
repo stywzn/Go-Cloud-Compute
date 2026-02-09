@@ -17,4 +17,9 @@ type Task struct {
 	CreatedAt time.Time      `json:"created_at"`
 	UpdatedAt time.Time      `json:"updated_at"`
 	DeletedAt gorm.DeletedAt `gorm:"index" json:"-"`
+
+	CpuUsage float64
+	MemUsage float64
+
+	AiAdvice string `gorm:"type:text"`
 }
