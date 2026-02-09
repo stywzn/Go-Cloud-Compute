@@ -25,7 +25,7 @@ services:
   api-server:
     build: .
     command: ./api-server
-    restart: always   # <--- 加上这一行 (关键!)
+    restart: always  
     ports:
       - "8080:8080"
     depends_on:
@@ -37,7 +37,7 @@ services:
   scan-worker:
     build: .
     command: ./scan-worker
-    restart: always   # <--- 加上这一行 (关键!)
+    restart: always   
     depends_on:
       - mysql
       - rabbitmq

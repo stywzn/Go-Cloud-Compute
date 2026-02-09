@@ -18,7 +18,7 @@ func Init() {
 	dsn := fmt.Sprintf("%s:%s@tcp(%s:%s)/%s?charset=utf8mb4&parseTime=True&loc=Local",
 		viper.GetString("database.user"),
 		viper.GetString("database.password"),
-		viper.GetString("database.host"), // <--- 这里最关键！它会读 config.yaml 里的 "mysql"
+		viper.GetString("database.host"),
 		viper.GetString("database.port"),
 		viper.GetString("database.dbname"),
 	)
@@ -26,7 +26,6 @@ func Init() {
 	var err error
 	DB, err = gorm.Open(mysql.Open(dsn), &gorm.Config{})
 	if err != nil {
-		// 注意：这里是英文日志，如果成功替换，下次报错应该是英文的
 		log.Fatalf("Failed to connect to database: %v", err)
 	}
 

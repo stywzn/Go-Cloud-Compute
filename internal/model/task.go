@@ -12,7 +12,6 @@ type Task struct {
 	Target string `json:"target"` // 扫描目标
 	Status string `json:"status"` // 状态: Pending, Running, Completed
 
-	// 👇 之前可能缺了这一行，加上它！
 	Result string `json:"result"` // 扫描结果
 
 	CreatedAt time.Time      `json:"created_at"`

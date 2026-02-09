@@ -1,17 +1,12 @@
-# 阶段 1: 构建 (Builder)
-# 使用官方 Go 镜像作为构建环境
 FROM golang:alpine AS builder
 
-# 设置工作目录
 WORKDIR /app
 
-# 复制依赖文件并下载
 COPY go.mod go.sum ./
-# 设置国内代理，编译更快
+
 ENV GOPROXY=https://goproxy.cn,direct
 RUN go mod download
 
-# 复制源码
 COPY . .
 
 # 编译两个二进制文件
@@ -21,7 +16,7 @@ RUN CGO_ENABLED=0 GOOS=linux go build -o scan-worker ./cmd/scan-worker
 
 # ----------------------------------------------------
 
-# 阶段 2: 运行 (Runner)
+# 运行 (Runner)
 # 使用极小的 Alpine 镜像 (只有 5MB)
 FROM alpine:latest
 

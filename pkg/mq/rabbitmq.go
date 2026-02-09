@@ -49,7 +49,6 @@ func Init() {
 	log.Println("RabbitMQ connected.")
 }
 
-// 👇 关键在这里！必须定义 Publish 函数 👇
 func Publish(body string) error {
 	return Channel.Publish(
 		"",        // exchange

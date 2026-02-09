@@ -1,7 +1,7 @@
 version: '3.8'
 
 services:
-  # 1. 数据库 MySQL
+  # 数据库 MySQL
   mysql:
     image: mysql:8.0
     container_name: gsp_mysql
@@ -13,7 +13,7 @@ services:
     volumes:
       - mysql_data:/var/lib/mysql
 
-  # 2. 消息队列 RabbitMQ (带管理界面)
+  # 消息队列 RabbitMQ (带管理界面)
   rabbitmq:
     image: rabbitmq:3-management
     container_name: gsp_rabbitmq
@@ -21,7 +21,7 @@ services:
       - "5672:5672"  # 代码连接端口
       - "15672:15672" # 网页管理端口 (账号密码默认都是 guest)
 
-  # 3. 缓存 Redis (MVP 暂时不用，先占个坑，可以注释掉)
+  # 3. 缓存 Redis (MVP 暂时不用，先占个坑)
   # redis:
   #   image: redis:alpine
   #   ports:
