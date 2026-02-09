@@ -6,13 +6,13 @@ database:
   host: mysql
   port: 3306
   user: root
-  password: your_db_password_here  # <--- 别人用的时候自己填
+  password: your_db_password_here  
   dbname: sentinel
 
 rabbitmq:
   # 注意：Docker 环境下 host 必须是服务名 "rabbitmq"
   host: rabbitmq
   port: 5672
-  user: your_mq_user_here          # <--- 别人用的时候自己填
-  password: your_mq_password_here  # <--- 别人用的时候自己填
+  user: your_mq_user_here        
+  password: your_mq_password_here  
   queue_name: scan_tasks
