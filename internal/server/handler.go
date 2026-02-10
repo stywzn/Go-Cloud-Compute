@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"log"
+	"sync"
 	"time"
 
 	pb "github.com/stywzn/Go-Cloud-Compute/api/proto"
@@ -17,9 +18,21 @@ type AgentModel struct {
 	Status   string
 }
 
+type JobRecord struct {
+	gorm.Model
+	JobID      string `gorm:"uniqueIndex;size:191"`
+	AgentID    string `gorm:"index;size:191"`
+	Type       string
+	Result     string
+	Payload    string
+	Status     string
+	ExecutedAt time.Time
+}
+
 type SentinelServer struct {
 	pb.UnimplementedSentinelServiceServer
-	DB *gorm.DB
+	DB       *gorm.DB
+	JobQueue sync.Map
 }
 
 func (s *SentinelServer) Register(ctx context.Context, req *pb.RegisterReq) (*pb.RegisterResp, error) {
@@ -62,16 +75,12 @@ func (s *SentinelServer) Heartbeat(stream pb.SentinelService_HeartbeatServer) er
 			return err
 		}
 
-		log.Printf(" [Heartbeat] 来自: %s", req.AgentId)
+		if val, ok := s.JobQueue.LoadAndDelete(req.AgentId); ok {
+			job := val.(*pb.Job)
+			log.Printf("[Dispatch] 发现信箱有任务! 派发给 %s -> %s", req.AgentId, job.Payload)
 
-		if time.Now().Unix()%10 == 0 {
-			log.Printf(" [Dispatch] 正在派发 PING 任务给 %s", req.AgentId)
 			err := stream.Send(&pb.HeartbeatResp{
-				Job: &pb.Job{
-					JobId:   "job-" + req.AgentId,
-					Type:    pb.JobType_PING,
-					Payload: "8.8.8.8",
-				},
+				Job: job,
 			})
 			if err != nil {
 				return err
@@ -86,5 +95,19 @@ func (s *SentinelServer) ReportJobStatus(ctx context.Context, req *pb.ReportJobR
 
 	log.Printf(" [Report] 收到任务汇报! Agent: %s | Job: %s | 状态: %s | 结果: %s",
 		req.AgentId, req.JobId, req.Status, req.Result)
+	record := JobRecord{
+		JobID:      req.JobId,
+		AgentID:    req.AgentId,
+		Type:       "PING",
+		Payload:    "Unknown",
+		Result:     req.Result,
+		Status:     req.Status,
+		ExecutedAt: time.Now(),
+	}
+	if err := s.DB.Create(&record).Error; err != nil {
+		log.Printf("[DB] 保存任务记录失败: %v", err)
+	} else {
+		log.Printf("[DB] 任务记录已入库 (ID: %d)", record.ID)
+	}
 	return &pb.ReportJobResp{Received: true}, nil
 }
