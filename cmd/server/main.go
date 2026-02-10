@@ -12,9 +12,19 @@ import (
 
 	pb "github.com/stywzn/Go-Cloud-Compute/api/proto"
 	"github.com/stywzn/Go-Cloud-Compute/internal/server"
+	"github.com/stywzn/Go-Cloud-Compute/pkg/db"
+	"github.com/stywzn/Go-Cloud-Compute/pkg/mq"
 )
 
 func main() {
+
+	db.InitMySQL()
+	mqHost := os.Getenv("MQ_HOST")
+	if mqHost == "" {
+		mqHost = "localhost"
+	}
+	rabbit := mq.NewRabbitMQ(mqHost, "job_queue")
+	defer rabbit.Close()
 
 	dbHost := os.Getenv("DB_HOST")
 	if dbHost == "" {

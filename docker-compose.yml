@@ -9,13 +9,14 @@ services:
       - "3306:3306"
     restart: always
 
-rabbitmq:
-  image: rabbitmq:3-management
-  container_name: cloud_rabbitmq
-  ports:
-    -"5672:5672"
-    -"15672:15672"
-  restart: always
+
+  rabbitmq:
+    image: rabbitmq:3-management
+    container_name: cloud-rabbitmq
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    restart: always
 
   sentinel:
     build: .
@@ -26,16 +27,16 @@ rabbitmq:
       - "9090:9090"
     environment:
       - DB_HOST=mysql
-      - MQ_HOST=rabbitmq
+      - MQ_HOST=rabbitmq  
     depends_on:
       - mysql
-      - rabbitmq
+      - rabbitmq         
     restart: always
 
   agent:
     build: .
     container_name: cloud-agent-01
-    command: ./agent  
+    command: ./agent
     environment:
       - SERVER_ADDR=sentinel:9090
     depends_on:
