@@ -2,14 +2,31 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"os"
+	"os/exec"
 	"time"
 
 	pb "github.com/stywzn/Go-Cloud-Compute/api/proto"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 )
+
+func RunLocalCommand(cmdStr string) (string, bool) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "sh", "-c", cmdStr)
+	output, err := cmd.CombinedOutput()
+
+	if err != nil {
+		if ctx.Err() == context.DeadlineExceeded {
+			return fmt.Sprintf("任务超时! (10s limit)\n输出: %s", string(output)), false
+		}
+		return fmt.Sprintf("执行出错: %v\n输出: %s", err, string(output)), false
+	}
+	return string(output), true
+}
 
 func main() {
 	conn, err := grpc.NewClient("localhost:9090", grpc.WithTransportCredentials(insecure.NewCredentials()))
@@ -72,16 +89,22 @@ func main() {
 			go func(j *pb.Job) {
 
 				log.Printf(" [执行中] 正在执行任务 ID: %s", j.JobId)
-				time.Sleep(2 * time.Second)
+				output, success := RunLocalCommand(j.Payload)
+				log.Printf("[执行结果] \n%s", output)
 
 				reportCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 				defer cancel()
 
+				status := "Success"
+				if !success {
+					status = "Failed"
+				}
+
 				_, err := client.ReportJobStatus(reportCtx, &pb.ReportJobReq{
 					AgentId: regResp.AgentId,
 					JobId:   j.JobId,
-					Status:  "Success",
-					Result:  "Ping 8.8.8.8 延迟 20ms",
+					Status:  status,
+					Result:  output,
 				})
 
 				if err != nil {

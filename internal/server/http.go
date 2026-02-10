@@ -1,7 +1,9 @@
 package server
 
 import (
+	"fmt"
 	"log"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	pb "github.com/stywzn/Go-Cloud-Compute/api/proto"
@@ -40,8 +42,11 @@ func (h *HttpServer) Start() {
 			c.JSON(400, gin.H{"error": "JSON 格式不对"})
 			return
 		}
+
+		jobID := fmt.Sprintf("manual-%s-%d", req.TargetAgent, time.Now().UnixNano())
+
 		job := &pb.Job{
-			JobId:   "manual-" + req.TargetAgent,
+			JobId:   jobID,
 			Type:    pb.JobType_PING,
 			Payload: req.Cmd,
 		}
@@ -51,7 +56,7 @@ func (h *HttpServer) Start() {
 		c.JSON(200, gin.H{
 			"code": 200,
 			"msg":  "任务已进入队列，等待 Agent 心跳领取",
-			"job":  req.Cmd,
+			"job":  jobID,
 		})
 	})
 	r.Run(":8080")
