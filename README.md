@@ -1,99 +1,60 @@
-# G-Asset-Platform (Distributed Security Scanner)
+# Go Cloud Compute (分布式任务调度系统)
 
-![Go](https://img.shields.io/badge/Go-1.21+-00ADD8?style=flat&logo=go)
-![Docker](https://img.shields.io/badge/Docker-Enabled-2496ED?style=flat&logo=docker)
-![RabbitMQ](https://img.shields.io/badge/RabbitMQ-Messaging-FF6600?style=flat&logo=rabbitmq)
-![Gin](https://img.shields.io/badge/Gin-Web_Framework-008ECF?style=flat&logo=go)
+![Go Version](https://img.shields.io/badge/go-1.21%2B-blue)
+![Architecture](https://img.shields.io/badge/Architecture-Master%2FWorker-green)
+![Status](https://img.shields.io/badge/Status-V1.5-orange)
 
-## 📖 Introduction
-**G-Asset-Platform** is an enterprise-level distributed security asset management and scanning system. Designed with a microservices architecture, it addresses performance bottlenecks in large-scale network asset detection.
+## 📖 项目简介
 
-The system utilizes **RabbitMQ** for asynchronous task distribution and traffic peak clipping, and employs **Golang**'s concurrency model (Goroutines) to build a high-performance Worker Pool. It supports rapid port scanning and liveness detection for massive IP ranges, with real-time result persistence to MySQL.
+Go Cloud Compute 是一个轻量级的分布式任务调度平台。采用 **Master-Worker** 架构设计，旨在解决单机计算瓶颈问题。
 
-## 🏗️ Architecture
+系统将任务分发与执行解耦，利用 **RabbitMQ** 实现流量削峰与负载均衡，通过 **gRPC** 实现节点的心跳保活与状态监控。目前版本已支持 Shell 脚本的远程执行、结果回传以及节点的自动注册与发现。
 
-mermaid
-graph LR
-    User[User] -- POST /api/scan --> API_Gateway[API Gateway (Gin)]
-    API_Gateway -- 1. Persist Task --> MySQL[(MySQL DB)]
-    API_Gateway -- 2. Publish Message --> MQ[[RabbitMQ]]
-    
-    MQ -- Consume Task --> Worker_Pool[Scanner Worker Pool]
-    
-    subgraph Worker Nodes
-    Worker1[Worker-1]
-    Worker2[Worker-2]
-    Worker3[Worker-3]
-    end
-    
-    Worker_Pool --- Worker1
-    Worker_Pool --- Worker2
-    Worker_Pool --- Worker3
-    
-    Worker1 -- 3. Scan (net.Dial) --> Internet[Target Assets]
-    Worker1 -- 4. Update Result --> MySQL
-✨ Key Features
-Distributed Architecture: Decoupled API Server and Worker nodes, supporting horizontal scaling.
+---
 
-High Concurrency: Implemented with Goroutine Pool, supporting thousands of concurrent scans per node.
+## 🏗 系统架构
 
-Asynchronous Processing: Integrated RabbitMQ to handle traffic bursts and prevent database overload.
+[Client] (HTTP)
+   ⬇
+[Server (Master)]  <---(gRPC Heartbeat/Report)--->  [Agent (Worker)]
+   ⬇ (Publish)                                         ⬆ (Consume)
+[RabbitMQ] --------------------------------------------+
+   ⬇
+[MySQL] (Persistence)
 
-Containerization: One-click deployment for MySQL, RabbitMQ, and services using docker-compose.
+* **Server (控制面)**: 提供 HTTP 接口接收用户任务；通过 gRPC 管理 Agent 节点的生命周期（注册、心跳、状态更新）。
+* **Agent (数据面)**: 无状态计算节点，可水平扩容。通过 MQ 抢占式消费任务，执行完毕后通过 gRPC 汇报结果。
+* **RabbitMQ**: 充当任务总线，确保任务在海量并发下的可靠缓冲与分发。
 
-RESTful API: Standard HTTP interfaces for task submission and result querying.
+---
 
-🛠️ Tech Stack
-Language: Golang (1.21+)
+## ✨ 核心特性 (V1.5)
 
-Web Framework: Gin
+### 1. 混合通信架构 (Hybrid Communication)
+* **外部交互**: 使用标准 RESTful API (HTTP) 接收外部请求。
+* **内部治理**: 使用 **gRPC (Protobuf)** 进行高性能的节点注册与心跳检测。
+* **异步解耦**: 使用 **RabbitMQ** 进行任务投递，实现了生产者与消费者的完全解耦。
 
-Database: MySQL 8.0 + GORM
+### 2. 高可靠性设计 (Reliability)
+* **消息确认 (ACK)**: 实现了 RabbitMQ 的手动 ACK 机制。只有当 Agent 真正执行完任务后才会确认消息，防止因节点宕机导致任务丢失。
+* **优雅停机 (Graceful Shutdown)**: Server 和 Agent 均监听系统信号 (`SIGINT/SIGTERM`)。在关闭时，Agent 会停止接收新任务，并等待当前正在执行的任务完成后再退出，确保**“零数据丢失”**。
+* **QoS 控制**: 配置了 `QoS Prefetch`，防止单个节点因积压过多任务而崩溃。
 
-Message Queue: RabbitMQ
+### 3. 可观测性 (Observability)
+* **链路日志**: 集成了自定义的 HTTP 中间件与 gRPC 拦截器，记录每个请求的耗时、来源 IP 及状态码，便于性能分析与故障排查。
+* **状态管理**: MySQL 实时记录 Agent 的在线状态及任务的执行历史。
 
-Concurrency: Goroutine + Channel + WaitGroup
+---
 
-Deployment: Docker + Docker Compose
+## 🚀 快速开始
 
-🚀 Quick Start
-1. Prerequisites
-Ensure Docker and Docker Compose are installed.
+### 环境要求
+* Go 1.21+
+* Docker & Docker Compose
+* Make (可选)
 
-2. Start Infrastructure
-Bash
-docker-compose -f deploy/docker-compose.yml up -d
-3. Run Services
-Start API Server (Terminal 1):
-
-Bash
-go run cmd/api-server/main.go
-Start Scanning Worker (Terminal 2):
-
-Bash
-go run cmd/scan-worker/main.go
-4. API Usage
-Submit Scan Task:
-
-Bash
-curl -X POST http://localhost:8080/api/scan \
-  -H "Content-Type: application/json" \
-  -d '{"target": "127.0.0.1"}'
-Query Task Result:
-
-Bash
-# Replace '1' with the actual task_id returned
-curl "http://localhost:8080/api/task?id=1"
-📄 Directory Structure
-Plaintext
-G-Asset-Platform/
-├── cmd/
-│   ├── api-server/   # API Gateway entry
-│   └── scan-worker/  # Scanning Worker entry
-├── internal/
-│   └── model/        # Database models
-├── pkg/
-│   ├── db/           # Database utilities
-│   └── mq/           # RabbitMQ utilities
-├── deploy/           # Docker configuration
-└── go.mod            # Dependencies
+### 1. 启动基础设施
+使用 Docker 一键启动 MySQL 和 RabbitMQ：
+```bash
+# 启动中间件
+docker compose up -d
