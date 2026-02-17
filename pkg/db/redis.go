@@ -9,14 +9,14 @@ import (
 	"github.com/stywzn/Go-Cloud-Compute/pkg/config"
 )
 
-var DB *redis.Client
+var RDB *redis.Client
 
 func InitRedis() {
-	cfg := config.Conf.Redis
+	cfg := config.GlobalConfig
 	RDB = redis.NewClient(&redis.Options{
-		Addr:     cfg.Addr,
-		Password: cfg.Password,
-		DB:       cfg.DB,
+		Addr:     cfg.Redis.Addr,
+		Password: cfg.Redis.Password,
+		DB:       cfg.Redis.DB,
 	})
 
 	_, err := RDB.Ping(context.Background()).Result()
@@ -29,7 +29,7 @@ func InitRedis() {
 
 func LockTask(taskKey string, ttl time.Duration) bool {
 	ctx := context.Background()
-	success, err := RDB.SetNX(ctx, taskKey, "processing", ttl).Rsult()
+	success, err := RDB.SetNX(ctx, taskKey, "processing", ttl).Result()
 	if err != nil {
 		log.Printf("Redis error: %v", err)
 		return false

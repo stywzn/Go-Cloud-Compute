@@ -1,33 +1,34 @@
+version: '3.8'
+
 services:
+  # 1. 数据库服务
   mysql:
     image: mysql:8.0
-    container_name: cloud-mysql
+    container_name: compute-mysql
+    restart: always
     environment:
       MYSQL_ROOT_PASSWORD: root
       MYSQL_DATABASE: cloud_compute
     ports:
       - "3306:3306"
-    restart: always
+    volumes:
+      - mysql_data:/var/lib/mysql
+    command: --default-authentication-plugin=mysql_native_password
 
-  sentinel:
-    build: .
-    container_name: cloud-sentinel
-    command: ./server
+  # 2. 消息队列服务
+  rabbitmq:
+    image: rabbitmq:3-management  # 关键：带 management 后缀才有网页后台
+    container_name: compute-rabbitmq
+    restart: always
     ports:
-      - "8080:8080"
-      - "9090:9090"
+      - "5672:5672"   # 你的代码连接这个端口 (App)
+      - "15672:15672" # 浏览器访问这个端口 (Web UI)
     environment:
-      - DB_HOST=mysql
-    depends_on:
-      - mysql
-    restart: always
+      RABBITMQ_DEFAULT_USER: guest
+      RABBITMQ_DEFAULT_PASS: guest
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
 
-  agent:
-    build: .
-    container_name: cloud-agent-01
-    command: ./agent  
-    environment:
-      - SERVER_ADDR=sentinel:9090
-    depends_on:
-      - sentinel
-    restart: always
+volumes:
+  mysql_data:
+  rabbitmq_data:

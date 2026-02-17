@@ -1,14 +1,14 @@
 package server
 
 import (
-	"fmt"
+	"encoding/json"
 	"log"
 	"net/http"
 	"time"
 
-	"github.com/gin-gonic/gin"
-	pb "github.com/stywzn/Go-Cloud-Compute/api/proto"
 	"gorm.io/gorm"
+
+	"github.com/stywzn/Go-Cloud-Compute/pkg/mq" // ✅ 引入 MQ 包
 )
 
 type HttpServer struct {
@@ -16,80 +16,82 @@ type HttpServer struct {
 	Srv *SentinelServer
 }
 
-type JobRequest struct {
-	TargetAgent string `json:"target"`
-	Cmd         string `json:"cmd"`
-}
-
-func NewHttpServer(db *gorm.DB, srv *SentinelServer) http.Handler { // 👈 注意：这里返回值改成 http.Handler
+// NewHttpServer 初始化 HTTP 服务 (标准库版本)
+func NewHttpServer(db *gorm.DB, srv *SentinelServer) http.Handler {
 	mux := http.NewServeMux()
 	server := &HttpServer{DB: db, Srv: srv}
 
 	// 注册路由
-	mux.HandleFunc("/task", server.handleTask)     // 假设你有这个接口
+	mux.HandleFunc("/task", server.handleTask)     // 发任务接口
 	mux.HandleFunc("/health", server.handleHealth) // 健康检查
 
-	// 👇👇👇 关键：套上日志中间件 👇👇👇
+	// 👇 套上我们写的日志中间件
 	return LoggingMiddleware(mux)
 }
 
+// LoggingMiddleware 日志中间件
 func LoggingMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		start := time.Now() // 1. 掐表开始
+		start := time.Now()
 
-		// 包装 ResponseWriter 以捕获状态码 (可选，稍微复杂点，这里先略过，只记耗时)
-		next.ServeHTTP(w, r) // 2. 执行业务逻辑
+		next.ServeHTTP(w, r) // 执行业务逻辑
 
-		duration := time.Since(start) // 3. 掐表结束
+		duration := time.Since(start)
 
-		// 4. 打印带指标的日志
-		// [协议] [方法] [路径] [耗时] [客户端IP]
-		// 例子: [HTTP] POST /task | 12.5ms | 192.168.1.5
+		// 打印结构化日志: [HTTP] 方法 路径 | 耗时 | IP
 		log.Printf("🌐 [HTTP] %s %s | ⏳ %v | 📍 %s",
-			r.Method,
-			r.URL.Path,
-			duration,
-			r.RemoteAddr,
-		)
+			r.Method, r.URL.Path, duration, r.RemoteAddr)
 
-		// 进阶思考：如果 duration > 500ms，可以打印一条 WARN 日志
 		if duration > 500*time.Millisecond {
 			log.Printf("⚠️ [Slow Request] 发现慢请求: %s", r.URL.Path)
 		}
 	})
 }
 
-func (h *HttpServer) Start() {
-	r := gin.Default()
+// handleHealth 健康检查
+func (s *HttpServer) handleHealth(w http.ResponseWriter, r *http.Request) {
+	w.WriteHeader(http.StatusOK)
+	w.Write([]byte("OK"))
+}
 
-	r.GET("/agent", func(c *gin.Context) {
-		var agents []AgentModel
-		h.DB.Find(&agents)
-		c.JSON(200, gin.H{"code": 200, "data": agents})
-	})
+// 🔥🔥 核心逻辑：接收 HTTP 请求 -> 发送给 RabbitMQ 🔥🔥
+func (s *HttpServer) handleTask(w http.ResponseWriter, r *http.Request) {
+	// 1. 只允许 POST 方法
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
 
-	r.POST("/job", func(c *gin.Context) {
-		var req JobRequest
-		if err := c.ShouldBindJSON(&req); err != nil {
-			c.JSON(400, gin.H{"error": "JSON 格式不对"})
-			return
-		}
+	// 2. 解析请求 JSON
+	// 我们统一定义一个简单的任务结构
+	var req struct {
+		Type    string `json:"type"`    // 任务类型: shell, python, etc.
+		Payload string `json:"payload"` // 具体命令: "echo hello"
+	}
 
-		jobID := fmt.Sprintf("manual-%s-%d", req.TargetAgent, time.Now().UnixNano())
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "Bad Request: JSON 格式错误", http.StatusBadRequest)
+		return
+	}
 
-		job := &pb.Job{
-			JobId:   jobID,
-			Type:    pb.JobType_PING,
-			Payload: req.Cmd,
-		}
-		h.Srv.JobQueue.Store(req.TargetAgent, job)
-		log.Printf("[HTTP] 管理员下发任务 -> %s : %s", req.TargetAgent, req.Cmd)
+	// 3. (可选) 可以在这里存入 MySQL 做审计记录
+	// s.DB.Create(...)
 
-		c.JSON(200, gin.H{
-			"code": 200,
-			"msg":  "任务已进入队列，等待 Agent 心跳领取",
-			"job":  jobID,
-		})
-	})
-	r.Run(":8080")
+	// 4. 发送到 RabbitMQ
+	// ⚠️ 注意：这里不再存入 Srv.JobQueue (内存Map)，那是旧架构
+	// 我们直接把 payload 扔进 MQ，让 Agent 自己去抢
+	err := mq.Publish(req.Payload)
+
+	if err != nil {
+		log.Printf("❌ [MQ] 投递失败: %v", err)
+		http.Error(w, "MQ Publish Failed", http.StatusInternalServerError)
+		return
+	}
+
+	log.Printf("✅ [MQ] 任务已进入队列: %s", req.Payload)
+
+	// 5. 返回成功响应
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusCreated)
+	w.Write([]byte(`{"code": 200, "msg": "任务已派发至 MQ"}`))
 }

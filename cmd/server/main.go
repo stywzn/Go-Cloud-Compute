@@ -11,6 +11,8 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/stywzn/Go-Cloud-Compute/pkg/config"
+	"github.com/stywzn/Go-Cloud-Compute/pkg/mq"
 	"google.golang.org/grpc"
 	"gorm.io/driver/mysql"
 	"gorm.io/gorm"
@@ -46,6 +48,8 @@ func UnaryServerInterceptor(
 
 func main() {
 	// 1. 配置加载 (建议以后用 viper，现在先用 env 顶一下)
+	config.LoadConfig() // 1. 先加载配置
+	mq.Init()
 	dbHost := os.Getenv("DB_HOST")
 	if dbHost == "" {
 		dbHost = "127.0.0.1"
@@ -80,7 +84,7 @@ func main() {
 
 	grpcServer := grpc.NewServer()
 	srv := &server.SentinelServer{DB: db}
-	grpcServer := grpc.NewServer(
+	grpcServer = grpc.NewServer(
 		grpc.UnaryInterceptor(UnaryServerInterceptor),
 	)
 

@@ -7,9 +7,9 @@ import (
 	"net"
 	"os"
 	"os/exec"
-	"os/signal" // 👈 引入信号包
-	"sync"      // 👈 引入等待组
-	"syscall"   // 👈 引入系统调用
+	"os/signal"
+	"sync"
+	"syscall"
 	"time"
 
 	"google.golang.org/grpc"
@@ -17,13 +17,12 @@ import (
 
 	"github.com/streadway/amqp"
 	pb "github.com/stywzn/Go-Cloud-Compute/api/proto"
-	"github.com/stywzn/Go-Cloud-Compute/pkg/mq"
+	"github.com/stywzn/Go-Cloud-Compute/pkg/config" // ✅ 引入配置
+	"github.com/stywzn/Go-Cloud-Compute/pkg/mq"     // ✅ 引入 MQ
 )
 
-// RunLocalCommand (保持不变)
+// RunLocalCommand 执行本地命令
 func RunLocalCommand(cmdStr string) (string, bool) {
-	// ... (代码略) ...
-	// 为了演示，这里假设执行逻辑没变
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "sh", "-c", cmdStr)
@@ -35,16 +34,18 @@ func RunLocalCommand(cmdStr string) (string, bool) {
 }
 
 func main() {
-	// ... (环境变量读取、Dialer 设置代码保持不变) ...
+	// ✅ 1. 初始化配置和 MQ (必须放在最前面)
+	config.LoadConfig()
+	mq.Init()
 
-	// 👇👇👇 核心修改 1: 定义优雅退出的信号通道 👇👇👇
+	// 👇👇👇 定义优雅退出的信号通道 👇👇👇
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 
-	// 👇👇👇 核心修改 2: 定义 WaitGroup 追踪任务 👇👇👇
+	// 👇👇👇 定义 WaitGroup 追踪任务 👇👇👇
 	var wg sync.WaitGroup
 
-	// 这里需要一个 context 来控制连接的生命周期
+	// 上下文控制
 	ctx, cancel := context.WithCancel(context.Background())
 
 	// 监听信号的协程
@@ -55,18 +56,69 @@ func main() {
 		cancel() // 通知主循环停止
 	}()
 
-	// 主循环 (被 ctx 控制)
+	// ------------------------------------------------------
+	// 🚀 启动 MQ 消费者 (建议放在主循环外面，独立运行)
+	// ------------------------------------------------------
+	go func() {
+		msgs, err := mq.Consume()
+		if err != nil {
+			log.Printf("❌ [MQ] 无法启动消费者: %v", err)
+			return
+		}
+
+		log.Println("👂 [MQ] 消费者已启动，等待任务...")
+
+		for d := range msgs {
+			// 如果正在关机，退回消息
+			if ctx.Err() != nil {
+				d.Nack(false, true)
+				continue
+			}
+
+			wg.Add(1) // 任务 +1
+
+			go func(delivery amqp.Delivery) {
+				defer wg.Done() // 任务 -1
+
+				jobPayload := string(delivery.Body)
+
+				// ✅ 【修复】幂等性检查日志放在这里 (只有这里才有 job 数据)
+				log.Printf("🔍 [幂等性检查] 正在校验 MQ 任务: %s", jobPayload)
+				// TODO: 这里将来加 Redis 查重逻辑
+				// if redis.Exists(jobID) { d.Ack(false); return }
+
+				log.Printf("⚙️ [MQ] 开始执行: %s", jobPayload)
+				output, success := RunLocalCommand(jobPayload)
+
+				if success {
+					log.Printf("✅ [MQ] 执行成功")
+					// 手动 ACK
+					if err := delivery.Ack(false); err != nil {
+						log.Printf("⚠️ Ack 失败: %v", err)
+					}
+				} else {
+					log.Printf("❌ [MQ] 执行失败: %s", output)
+					// 失败也 ACK (或者 Nack 重试，看策略)
+					delivery.Ack(false)
+				}
+			}(d)
+		}
+	}()
+
+	// ------------------------------------------------------
+	// 🔄 gRPC 主循环 (负责心跳和汇报)
+	// ------------------------------------------------------
 	for {
-		// 如果已经收到了退出信号，就跳出大循环
 		if ctx.Err() != nil {
 			break
 		}
 
-		// ... (连接 gRPC 代码保持不变) ...
 		serverAddr := os.Getenv("SERVER_ADDR")
 		if serverAddr == "" {
+			// 这里可以读配置 config.GlobalConfig.Server.GRPCPort
 			serverAddr = "127.0.0.1:9090"
 		}
+
 		customDialer := func(ctx context.Context, addr string) (net.Conn, error) {
 			d := net.Dialer{}
 			return d.DialContext(ctx, "tcp4", addr)
@@ -75,18 +127,31 @@ func main() {
 			grpc.WithTransportCredentials(insecure.NewCredentials()),
 			grpc.WithContextDialer(customDialer),
 		}
+
 		conn, err := grpc.NewClient(serverAddr, opts...)
 		if err != nil {
-			log.Printf("无法连接服务器: %v", err)
+			log.Printf("❌ 无法连接服务器: %v", err)
 			time.Sleep(3 * time.Second)
 			continue
 		}
 
 		client := pb.NewSentinelServiceClient(conn)
-		// ... (注册逻辑略) ...
-		// 假设注册成功拿到 agentID
-		agentID := "test-agent-id"
 
+		// 注册
+		hostname, _ := os.Hostname()
+		regResp, err := client.Register(context.Background(), &pb.RegisterReq{
+			Hostname: hostname,
+			Ip:       "127.0.0.1",
+		})
+		if err != nil {
+			log.Printf("⚠️ 注册失败: %v", err)
+			conn.Close()
+			time.Sleep(3 * time.Second)
+			continue
+		}
+		agentID := regResp.AgentId
+
+		// 心跳
 		stream, err := client.Heartbeat(context.Background())
 		if err != nil {
 			conn.Close()
@@ -94,133 +159,69 @@ func main() {
 			continue
 		}
 
-		// 3. 开始收发心跳
+		// 心跳管理通道
 		waitc := make(chan struct{})
 
-		// 发送心跳 (增加 ctx 退出控制)
+		// 发送心跳协程
 		go func() {
-			defer close(waitc) // 任何情况退出都要关闭通道
+			defer close(waitc)
 			for {
 				select {
-				case <-ctx.Done(): // 收到退出信号
+				case <-ctx.Done():
 					return
 				default:
 					err := stream.Send(&pb.HeartbeatReq{AgentId: agentID})
 					if err != nil {
-						log.Printf("❌ 心跳发送失败: %v", err)
-						return
+						return // 发送失败，触发重连
 					}
 					time.Sleep(5 * time.Second)
 				}
 			}
 		}()
 
-		// 接收任务 (主线程阻塞在这里)
-		// 我们把接收逻辑放在主线程或者受控的循环里
-
-		// cmd/agent/main.go 的消费协程部分
-
-		go func() {
-			// 1. 调用刚才封装好的 Consume
-			msgs, err := mq.Consume()
-			if err != nil {
-				log.Fatalf("❌ 无法消费 MQ: %v", err)
-			}
-
-			log.Println("👂 等待任务中...")
-
-			// 2. 遍历消息通道
-			for d := range msgs {
-				// 优雅退出检测：如果正在关机，就不处理新消息了，把消息退回去
-				if ctx.Err() != nil {
-					d.Nack(false, true) // 退回队列
-					continue
-				}
-
-				wg.Add(1) // 任务计数 +1
-
-				// 3. 开启协程处理这一条任务
-				go func(delivery amqp.Delivery) {
-					defer wg.Done() // 任务计数 -1
-
-					// 解析 Job (假设 payload 是 json 或者 string)
-					jobPayload := string(delivery.Body)
-					log.Printf("⚙️ [MQ] 收到任务: %s", jobPayload)
-
-					// 执行本地命令
-					output, success := RunLocalCommand(jobPayload)
-
-					// ... (这里放你的 gRPC 汇报逻辑) ...
-
-					// 👇👇👇【核心】手动 ACK 👇👇👇
-					if success {
-						// 任务成功，告诉 MQ 删掉这条消息
-						// false 表示只确认当前这一条
-						if err := delivery.Ack(false); err != nil {
-							log.Printf("⚠️ Ack 失败: %v", err)
-						}
-					} else {
-						// 任务失败 (比如脚本报错)，你可以选择：
-						// A. Ack 掉 (认栽，记录日志)
-						// B. Nack (退回队列重试，注意防止死循环)
-
-						// 这里我们演示简单的 Ack，实际生产通常会重试 3 次再丢弃
-						log.Printf("❌ 任务执行失败: %s", output)
-						delivery.Ack(false)
-					}
-
-				}(d) // 👈 必须把 d 传进去，闭包陷阱
-			}
-		}()
-
+		// 接收 gRPC 消息协程 (如果有 gRPC 下发任务的话)
 		go func() {
 			for {
-				// 如果正在退出，就断开接收
 				if ctx.Err() != nil {
 					return
 				}
 
 				resp, err := stream.Recv()
 				if err != nil {
-					log.Printf("❌ 连接断开: %v", err)
-					// 这里不能直接 close waitc，因为由发送协程管理
 					return
-				}
+				} // 断开连接
 
 				if resp.Job != nil {
-					// 👇👇👇 核心修改 3: 任务计数加 1 👇👇👇
 					wg.Add(1)
-
 					go func(j *pb.Job) {
-						// 👇👇👇 核心修改 4: 任务结束减 1 👇👇👇
 						defer wg.Done()
 
-						log.Printf("⚙️ [执行中] 任务: %s", j.Payload)
+						// ✅ 【修复】这里也有一个幂等性检查点
+						log.Printf("🔍 [幂等性检查] 正在校验 gRPC 任务 %s", j.JobId)
+
+						log.Printf("⚙️ [gRPC] 执行任务: %s", j.Payload)
 						output, success := RunLocalCommand(j.Payload)
 
-						// 汇报结果 (超时控制)
-						reportCtx, rCancel := context.WithTimeout(context.Background(), 5*time.Second)
-						defer rCancel()
-
+						// 汇报
+						ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+						defer cancel()
 						status := "Success"
 						if !success {
 							status = "Failed"
 						}
-						_, err := client.ReportJobStatus(reportCtx, &pb.ReportJobReq{
+
+						client.ReportJobStatus(ctx, &pb.ReportJobReq{
 							AgentId: agentID,
 							JobId:   j.JobId,
 							Status:  status,
 							Result:  output,
 						})
-						if err != nil {
-							log.Printf("❌ 汇报失败: %v", err)
-						}
 					}(resp.Job)
 				}
 			}
 		}()
 
-		// 等待心跳断开 或者 收到退出信号
+		// 阻塞等待断开
 		select {
 		case <-waitc:
 			log.Println("🔌 连接断开，3秒后重连...")
@@ -228,15 +229,13 @@ func main() {
 			log.Println("🛑 主循环停止连接...")
 		}
 
-		conn.Close() // 关闭连接
-
+		conn.Close()
 		if ctx.Err() != nil {
-			break // 彻底退出大循环
+			break
 		}
 		time.Sleep(3 * time.Second)
 	}
 
-	// 👇👇👇 核心修改 5: 阻塞等待所有任务跑完 👇👇👇
 	log.Println("⏳ 等待所有后台任务完成...")
 	wg.Wait()
 	log.Println("👋 Agent 安全退出")
