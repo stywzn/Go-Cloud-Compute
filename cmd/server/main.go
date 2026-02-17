@@ -19,6 +19,31 @@ import (
 	"github.com/stywzn/Go-Cloud-Compute/internal/server"
 )
 
+func UnaryServerInterceptor(
+	ctx context.Context,
+	req interface{},
+	info *grpc.UnaryServerInfo,
+	handler grpc.UnaryHandler,
+) (interface{}, error) {
+	start := time.Now() // 1. 开始
+
+	// 2. 执行真正的 RPC 方法 (比如 Heartbeat, Register)
+	resp, err := handler(ctx, req)
+
+	duration := time.Since(start) // 3. 结束
+
+	// 4. 打印日志
+	// 例子: [gRPC] /api.proto.SentinelService/Heartbeat | 2ms | Success
+	status := "✅ Success"
+	if err != nil {
+		status = fmt.Sprintf("❌ Error: %v", err)
+	}
+
+	log.Printf("🔗 [gRPC] %s | ⏳ %v | %s", info.FullMethod, duration, status)
+
+	return resp, err
+}
+
 func main() {
 	// 1. 配置加载 (建议以后用 viper，现在先用 env 顶一下)
 	dbHost := os.Getenv("DB_HOST")
@@ -55,6 +80,10 @@ func main() {
 
 	grpcServer := grpc.NewServer()
 	srv := &server.SentinelServer{DB: db}
+	grpcServer := grpc.NewServer(
+		grpc.UnaryInterceptor(UnaryServerInterceptor),
+	)
+
 	pb.RegisterSentinelServiceServer(grpcServer, srv)
 
 	// 4. 准备 HTTP 服务
@@ -64,9 +93,8 @@ func main() {
 
 	httpServer := &http.Server{
 		Addr:    ":8080",
-		Handler: httpHandler, // 这里假设你的 NewHttpServer 返回的是 *gin.Engine 或者实现了 ServeHTTP 的结构
+		Handler: httpHandler, // 直接用 wrap 过的 handler
 	}
-
 	// ---------------------------------------------------------
 	// 🚀 启动阶段 (全部放入协程，不阻塞主线程)
 	// ---------------------------------------------------------

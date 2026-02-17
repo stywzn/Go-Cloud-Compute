@@ -15,7 +15,9 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 
+	"github.com/streadway/amqp"
 	pb "github.com/stywzn/Go-Cloud-Compute/api/proto"
+	"github.com/stywzn/Go-Cloud-Compute/pkg/mq"
 )
 
 // RunLocalCommand (保持不变)
@@ -115,6 +117,62 @@ func main() {
 
 		// 接收任务 (主线程阻塞在这里)
 		// 我们把接收逻辑放在主线程或者受控的循环里
+
+		// cmd/agent/main.go 的消费协程部分
+
+		go func() {
+			// 1. 调用刚才封装好的 Consume
+			msgs, err := mq.Consume()
+			if err != nil {
+				log.Fatalf("❌ 无法消费 MQ: %v", err)
+			}
+
+			log.Println("👂 等待任务中...")
+
+			// 2. 遍历消息通道
+			for d := range msgs {
+				// 优雅退出检测：如果正在关机，就不处理新消息了，把消息退回去
+				if ctx.Err() != nil {
+					d.Nack(false, true) // 退回队列
+					continue
+				}
+
+				wg.Add(1) // 任务计数 +1
+
+				// 3. 开启协程处理这一条任务
+				go func(delivery amqp.Delivery) {
+					defer wg.Done() // 任务计数 -1
+
+					// 解析 Job (假设 payload 是 json 或者 string)
+					jobPayload := string(delivery.Body)
+					log.Printf("⚙️ [MQ] 收到任务: %s", jobPayload)
+
+					// 执行本地命令
+					output, success := RunLocalCommand(jobPayload)
+
+					// ... (这里放你的 gRPC 汇报逻辑) ...
+
+					// 👇👇👇【核心】手动 ACK 👇👇👇
+					if success {
+						// 任务成功，告诉 MQ 删掉这条消息
+						// false 表示只确认当前这一条
+						if err := delivery.Ack(false); err != nil {
+							log.Printf("⚠️ Ack 失败: %v", err)
+						}
+					} else {
+						// 任务失败 (比如脚本报错)，你可以选择：
+						// A. Ack 掉 (认栽，记录日志)
+						// B. Nack (退回队列重试，注意防止死循环)
+
+						// 这里我们演示简单的 Ack，实际生产通常会重试 3 次再丢弃
+						log.Printf("❌ 任务执行失败: %s", output)
+						delivery.Ack(false)
+					}
+
+				}(d) // 👈 必须把 d 传进去，闭包陷阱
+			}
+		}()
+
 		go func() {
 			for {
 				// 如果正在退出，就断开接收
